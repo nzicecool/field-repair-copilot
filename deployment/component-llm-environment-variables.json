@@ -2,7 +2,8 @@
   {"name":"LLM_PROVIDER","value":"gemini"},
   {"name":"LLM_MODEL","value":"gemini-3-flash-preview"},
   {"name":"LLM_PROVIDER_URL","value":"https://api.manus.im/api/llm-proxy/v1"},
-  {"name":"LLM_MAX_TOKENS","value":"900"},
+  {"name":"LLM_MAX_TOKENS","value":"1800"},
+  {"name":"LLM_REASONING_EFFORT","value":"low"},
   {"name":"LLM_HISTORY_MESSAGES","value":"6"},
   {"name":"LLM_PROVIDER_KEY","valueFrom":{"secretKeyRef":{"name":"field-repair-copilot-llm-provider","key":"api_key"}}}
 ]

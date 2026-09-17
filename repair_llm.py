@@ -28,6 +28,7 @@ DEFAULT_MODEL = "gemini-3-flash-preview"
 DEFAULT_BASE_URL = "https://api.manus.im/api/llm-proxy/v1"
 DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 DEFAULT_HISTORY_MESSAGES = 6
+DEFAULT_GEMINI_REASONING_EFFORT = "low"
 MAX_HISTORY_MESSAGES = 12
 SUPPORTED_PROVIDERS = ("gemini", "anthropic", "openai", "glm")
 
@@ -46,6 +47,9 @@ Give a concise Markdown repair brief with these sections when relevant:
 5. Suggested spares and evidence to collect
 6. Closure-draft requirements and approval gates
 7. Safety boundary
+
+Use all seven sections. Each of sections 1–6 must contain at least one concise,
+evidence-grounded bullet. Do not stop after a title, an identifier, or a section heading.
 
 The technician and relevant authorized supervisor are responsible for safety decisions,
 physical work, electrical activity, climbing, site access, spare consumption, service-restored
@@ -73,6 +77,7 @@ class LLMSettings:
     api_key: str | None
     max_tokens: int
     history_messages: int
+    reasoning_effort: str = DEFAULT_GEMINI_REASONING_EFFORT
 
     @classmethod
     def from_environment(cls) -> "LLMSettings":
@@ -84,13 +89,17 @@ class LLMSettings:
         else:
             base_url = (os.getenv("LLM_PROVIDER_URL") or os.getenv("OPENAI_API_BASE") or DEFAULT_BASE_URL).rstrip("/")
             api_key = os.getenv("LLM_PROVIDER_KEY") or os.getenv("OPENAI_API_KEY")
+        reasoning_effort = (os.getenv("LLM_REASONING_EFFORT") or DEFAULT_GEMINI_REASONING_EFFORT).strip().lower()
+        if reasoning_effort not in {"low", "medium", "high"}:
+            reasoning_effort = DEFAULT_GEMINI_REASONING_EFFORT
         return cls(
             provider=provider,
             model=model,
             base_url=base_url,
             api_key=api_key,
-            max_tokens=_bounded_int(os.getenv("LLM_MAX_TOKENS"), 900, 128, 2048),
+            max_tokens=_bounded_int(os.getenv("LLM_MAX_TOKENS"), 1800, 128, 4096),
             history_messages=_bounded_int(os.getenv("LLM_HISTORY_MESSAGES"), DEFAULT_HISTORY_MESSAGES, 0, MAX_HISTORY_MESSAGES),
+            reasoning_effort=reasoning_effort,
         )
 
     @property
@@ -107,6 +116,7 @@ class LLMSettings:
             "provider": self.provider,
             "model": self.model,
             "protocol": self.protocol,
+            "reasoning_effort": self.reasoning_effort if self.provider == "gemini" else None,
             "history_messages": self.history_messages,
             "supported_providers": list(SUPPORTED_PROVIDERS),
             "fallback": "deterministic mock-data repair brief",
@@ -215,8 +225,15 @@ class FieldRepairCopilot:
             return RepairResult(fallback, steps, None, True)
         try:
             response = self._generate(message, scenario, session_id)
-            steps.append(f"Synthesized an evidence-grounded repair brief through the configured {self.settings.provider} provider.")
-            fallback_used = False
+            if not _is_complete_repair_brief(response):
+                response = fallback
+                steps.append(
+                    "The model response was incomplete, so returned the complete deterministic mock-data repair brief."
+                )
+                fallback_used = True
+            else:
+                steps.append(f"Synthesized an evidence-grounded repair brief through the configured {self.settings.provider} provider.")
+                fallback_used = False
         except ModelUnavailable:
             response = fallback
             steps.append("The model invocation was unavailable; returned the deterministic repair-brief fallback.")
@@ -239,9 +256,14 @@ class FieldRepairCopilot:
         messages.extend(self.history.messages(session_id))
         messages.append({"role": "user", "content": prompt})
         try:
-            completion = self._get_openai_client().chat.completions.create(
-                model=self.settings.model, messages=messages, max_tokens=self.settings.max_tokens
-            )
+            request: dict[str, Any] = {
+                "model": self.settings.model,
+                "messages": messages,
+                "max_tokens": self.settings.max_tokens,
+            }
+            if self.settings.provider == "gemini":
+                request["extra_body"] = {"reasoning_effort": self.settings.reasoning_effort}
+            completion = self._get_openai_client().chat.completions.create(**request)
         except (APIConnectionError, AuthenticationError, RateLimitError, APIError) as exc:
             raise ModelUnavailable("Model request unavailable") from exc
         except Exception as exc:
@@ -281,3 +303,22 @@ def _require_text(text: str | None) -> str:
     if not text or not text.strip():
         raise ModelUnavailable("Model returned no visible response")
     return text.strip()
+
+
+def _is_complete_repair_brief(text: str) -> bool:
+    """Reject truncated model replies before exposing them to a field technician.
+
+    This protects the agent against a provider response that contains only a title
+    or partial first line. The full deterministic brief remains derived only from
+    the selected synthetic evidence and retains all safety and approval gates.
+    """
+    normalized = text.lower()
+    required_concepts = (
+        "assignment",
+        "evidence",
+        "safety",
+        "test",
+        "spare",
+        "approval",
+    )
+    return len(text.strip()) >= 700 and all(concept in normalized for concept in required_concepts)

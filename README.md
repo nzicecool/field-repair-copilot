@@ -20,10 +20,13 @@ Use `POST /chat` with a `context.scenario_id` to select a scenario. `GET /scenar
 
 The code supports **Gemini**, Anthropic, OpenAI, and Z.ai (GLM) through environment settings. The local deployment defaults to Gemini 3 Flash Preview. It retains a bounded per-session prompt history and returns user-visible development steps, but it never exposes private chain-of-thought.
 
+The Gemini deployment uses a low reasoning effort and a 1,800-token output allowance. Before a model reply is presented, the agent checks that it contains all required operational sections. A truncated or structurally incomplete reply is replaced with the complete deterministic brief derived from the selected synthetic evidence, rather than exposing partial field guidance.
+
 ```text
 LLM_PROVIDER=gemini
 LLM_MODEL=gemini-3-flash-preview
 LLM_PROVIDER_URL=https://api.manus.im/api/llm-proxy/v1
+LLM_REASONING_EFFORT=low
 LLM_PROVIDER_KEY=<injected-secret>
 ```
 

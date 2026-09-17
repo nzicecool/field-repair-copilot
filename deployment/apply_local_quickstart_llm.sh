@@ -12,6 +12,7 @@ SECRET_NAME="field-repair-copilot-llm-provider"
 PROVIDER="${LLM_PROVIDER:-gemini}"
 MODEL="${LLM_MODEL:-gemini-3-flash-preview}"
 PROVIDER_URL="${LLM_PROVIDER_URL:-https://api.manus.im/api/llm-proxy/v1}"
+REASONING_EFFORT="${LLM_REASONING_EFFORT:-low}"
 
 case "$PROVIDER" in
   gemini|anthropic|openai|glm) ;;
@@ -24,14 +25,20 @@ if [[ -z "$MODEL" || -z "$PROVIDER_URL" ]]; then
   exit 2
 fi
 
+if [[ "$REASONING_EFFORT" != "low" && "$REASONING_EFFORT" != "medium" && "$REASONING_EFFORT" != "high" ]]; then
+  echo "LLM_REASONING_EFFORT must be low, medium, or high." >&2
+  exit 2
+fi
+
 PATCH_FILE="$(mktemp)"
 trap 'rm -f "$PATCH_FILE"' EXIT
-jq -n --arg provider "$PROVIDER" --arg model "$MODEL" --arg endpoint "$PROVIDER_URL" --arg secret "$SECRET_NAME" '
+jq -n --arg provider "$PROVIDER" --arg model "$MODEL" --arg endpoint "$PROVIDER_URL" --arg effort "$REASONING_EFFORT" --arg secret "$SECRET_NAME" '
   [
     {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_PROVIDER", value:$provider}},
     {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_MODEL", value:$model}},
     {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_PROVIDER_URL", value:$endpoint}},
-    {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_MAX_TOKENS", value:"900"}},
+    {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_MAX_TOKENS", value:"1800"}},
+    {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_REASONING_EFFORT", value:$effort}},
     {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_HISTORY_MESSAGES", value:"6"}},
     {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_PROVIDER_KEY", valueFrom:{secretKeyRef:{name:$secret, key:"api_key"}}}}
   ]' > "$PATCH_FILE"

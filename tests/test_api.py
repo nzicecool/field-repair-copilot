@@ -13,7 +13,24 @@ client = TestClient(app)
 class FakeCompletion:
     class Choice:
         class Message:
-            content = "## Assignment and likely fault domain\nThe supplied evidence supports a local passive-path investigation."
+            content = """## Assignment and likely fault domain
+- The synthetic evidence supports a passive-path investigation.
+
+## Site-specific evidence and repeat-fault history
+- The assigned asset and prior work are reviewed only from the supplied simulation.
+
+## Mandatory safety and stop-work conditions
+- Follow approved field safety controls and stop when observed conditions differ.
+
+## Approved test sequence
+- Use the approved test procedure and retain the required output.
+
+## Suggested spares and evidence to collect
+- Confirm an approved spare and collect labelled evidence before authorized remediation.
+
+## Closure-draft requirements and approval gates
+- Require the authorized technician and supervisor to approve any closure draft.
+"""
 
         message = Message()
 
@@ -40,7 +57,24 @@ class FakeClient:
 class FakeAnthropicCompletion:
     class Block:
         type = "text"
-        text = "## Mandatory safety and stop-work conditions\nUse only approved procedures and escalate uncertain site conditions."
+        text = """## Assignment and likely fault domain
+- Review the assigned synthetic small-cell alarm only.
+
+## Site-specific evidence and repeat-fault history
+- Retain the supplied remote alarm ordering and prior work record.
+
+## Mandatory safety and stop-work conditions
+- Use only approved procedures and escalate uncertain site conditions.
+
+## Approved test sequence
+- Perform only authorized non-invasive power and backhaul verification.
+
+## Suggested spares and evidence to collect
+- Confirm approved spare authority and capture labelled observations.
+
+## Closure-draft requirements and approval gates
+- Require facilities and electrical authority approval before an authorized closure.
+"""
 
     content = [Block()]
 
@@ -145,6 +179,21 @@ def test_provider_failure_returns_deterministic_repair_fallback(monkeypatch):
     assert "Do not look into fiber ends" in payload["response"]
     assert "READ-ONLY REPAIR BRIEF" in payload["response"]
     assert "No dispatch" in payload["response"]
+
+
+def test_incomplete_model_response_returns_complete_evidence_grounded_fallback(monkeypatch):
+    monkeypatch.setattr(copilot, "_generate", lambda *args, **kwargs: "## Assignment\nPartial reply")
+    response = client.post(
+        "/chat",
+        json={"message": "Prepare the FTTH brief", "context": {"scenario_id": "repeated-ftth-optical-power-fault"}},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["used_fallback"] is True
+    assert payload["provider"] is None
+    assert "Recommended approved test sequence" in payload["response"]
+    assert "Supervisor-approved service-restored declaration" in payload["response"]
+    assert any("incomplete" in step.lower() for step in payload["development_steps"])
 
 
 def test_small_cell_scenario_requires_facilities_and_electrical_approval(monkeypatch):
