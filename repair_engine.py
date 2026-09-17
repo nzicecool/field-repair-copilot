@@ -21,6 +21,25 @@ def select_scenario(message: str, context: dict[str, Any] | None = None) -> dict
         return scenario_data(requested)
 
     text = message.lower().replace("_", "-")
+    # Test the specific fiber vocabulary before generic shared terms such as
+    # "power".  Otherwise an FTTH optical-power query could select the small-
+    # cell power-and-backhaul simulation instead of the intended fiber brief.
+    if any(
+        term in text
+        for term in (
+            "ftth",
+            "fiber",
+            "fibre",
+            "optical",
+            "pon",
+            "olt",
+            "ont",
+            "splitter",
+            "fdf",
+            "fdp",
+        )
+    ):
+        return scenario_data("repeated-ftth-optical-power-fault")
     if any(term in text for term in ("wireless", "cpe", "roof", "weather", "link flap")):
         return scenario_data("fixed-wireless-intermittent-cpe-link")
     if any(term in text for term in ("small cell", "power", "backhaul", "enclosure", "cell")):

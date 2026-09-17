@@ -157,6 +157,19 @@ def test_small_cell_scenario_requires_facilities_and_electrical_approval(monkeyp
     assert "electrical-authority approval" in evidence.lower()
 
 
+def test_ftth_optical_power_query_precedes_generic_small_cell_power_match(monkeypatch):
+    fake_client = FakeClient()
+    monkeypatch.setattr(copilot, "_get_openai_client", lambda: fake_client)
+    response = client.post(
+        "/chat",
+        json={"message": "Prepare an FTTH optical-power repair brief with safety gates."},
+    )
+    assert response.status_code == 200
+    evidence = fake_client.chat.completions.calls[-1]["messages"][-1]["content"]
+    assert "FIELD-SIM-2026-0917-001" in evidence
+    assert "Do not look into fiber ends" in evidence
+
+
 def test_invalid_scenario_returns_safe_catalogue_without_model(monkeypatch):
     fake_client = FakeClient()
     monkeypatch.setattr(copilot, "_get_openai_client", lambda: fake_client)
