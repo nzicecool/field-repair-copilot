@@ -30,18 +30,9 @@ if [[ "$REASONING_EFFORT" != "low" && "$REASONING_EFFORT" != "medium" && "$REASO
   exit 2
 fi
 
+RELEASE_BINDING_FILE="$(mktemp)"
 PATCH_FILE="$(mktemp)"
-trap 'rm -f "$PATCH_FILE"' EXIT
-jq -n --arg provider "$PROVIDER" --arg model "$MODEL" --arg endpoint "$PROVIDER_URL" --arg effort "$REASONING_EFFORT" --arg secret "$SECRET_NAME" '
-  [
-    {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_PROVIDER", value:$provider}},
-    {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_MODEL", value:$model}},
-    {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_PROVIDER_URL", value:$endpoint}},
-    {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_MAX_TOKENS", value:"1800"}},
-    {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_REASONING_EFFORT", value:$effort}},
-    {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_HISTORY_MESSAGES", value:"6"}},
-    {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_PROVIDER_KEY", valueFrom:{secretKeyRef:{name:$secret, key:"api_key"}}}}
-  ]' > "$PATCH_FILE"
+trap 'rm -f "$RELEASE_BINDING_FILE" "$PATCH_FILE"' EXIT
 
 # Standard input moves directly to OpenBao. The key is never placed in a shell
 # variable, temporary file, command argument, command output, or repository.
@@ -56,6 +47,28 @@ docker exec -i "$QUICK_START_CONTAINER" kubectl apply -f - < "$ROOT_DIR/deployme
 docker exec -i "$QUICK_START_CONTAINER" kubectl apply -f - < "$ROOT_DIR/deployment/llm-data-plane-external-secret.yaml" >/dev/null
 docker exec "$QUICK_START_CONTAINER" kubectl wait --for=condition=Ready \
   "externalsecret/${SECRET_NAME}" -n "$DATA_PLANE_NAMESPACE" --timeout=90s >/dev/null
+
+# Remove prior LLM entries in reverse index order and add the desired entries.
+# The Quick Start release-binding reconciler preserves this RFC 6902 form while
+# retaining platform-managed AgentID entries. It also makes repeat configuration
+# safe when changing provider, model, output budget, or reasoning effort.
+docker exec "$QUICK_START_CONTAINER" kubectl get releasebinding \
+  "${COMPONENT_NAME}-default" -n "$CONTROL_NAMESPACE" -o json \
+  > "$RELEASE_BINDING_FILE"
+jq --arg provider "$PROVIDER" --arg model "$MODEL" --arg endpoint "$PROVIDER_URL" --arg effort "$REASONING_EFFORT" --arg secret "$SECRET_NAME" '
+    [
+      (.spec.workloadOverrides.container.env | to_entries | reverse[]?
+       | select(.value.key | startswith("LLM_"))
+       | {op:"remove", path:("/spec/workloadOverrides/container/env/" + (.key | tostring))})
+    ] + [
+      {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_PROVIDER", value:$provider}},
+      {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_MODEL", value:$model}},
+      {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_PROVIDER_URL", value:$endpoint}},
+      {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_MAX_TOKENS", value:"1800"}},
+      {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_REASONING_EFFORT", value:$effort}},
+      {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_HISTORY_MESSAGES", value:"6"}},
+      {op:"add", path:"/spec/workloadOverrides/container/env/-", value:{key:"LLM_PROVIDER_KEY", valueFrom:{secretKeyRef:{name:$secret, key:"api_key"}}}}
+    ]' "$RELEASE_BINDING_FILE" > "$PATCH_FILE"
 
 docker exec -i "$QUICK_START_CONTAINER" kubectl patch releasebinding \
   "${COMPONENT_NAME}-default" -n "$CONTROL_NAMESPACE" --type=json \
