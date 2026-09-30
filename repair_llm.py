@@ -22,6 +22,7 @@ from anthropic import (
 )
 from openai import APIConnectionError, APIError, AuthenticationError, OpenAI, RateLimitError
 
+from finops_runtime import FinOpsRuntime, anthropic_usage, estimate_tokens, openai_usage
 from repair_engine import ScenarioNotFound, build_repair_brief, list_scenarios_report, select_scenario
 
 DEFAULT_MODEL = "gemini-3-flash-preview"
@@ -179,6 +180,7 @@ class FieldRepairCopilot:
         self.history = SessionHistory(self.settings.history_messages)
         self._openai_client: OpenAI | None = None
         self._anthropic_client: Anthropic | None = None
+        self.finops = FinOpsRuntime("field-repair-copilot")
 
     def public_status(self) -> dict[str, Any]:
         return self.settings.public_status()
@@ -255,6 +257,11 @@ class FieldRepairCopilot:
         messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend(self.history.messages(session_id))
         messages.append({"role": "user", "content": prompt})
+        preflight = self.finops.preflight(
+            self.settings.model, estimate_tokens(messages), self.settings.max_tokens
+        )
+        if not preflight.allowed:
+            raise ModelUnavailable(preflight.reason)
         try:
             request: dict[str, Any] = {
                 "model": self.settings.model,
@@ -268,12 +275,18 @@ class FieldRepairCopilot:
             raise ModelUnavailable("Model request unavailable") from exc
         except Exception as exc:
             raise ModelUnavailable("Model request failed") from exc
+        self.finops.record_usage(preflight.request_id, self.settings.model, *openai_usage(completion))
         text = completion.choices[0].message.content if completion.choices else None
         return _require_text(text)
 
     def _generate_anthropic(self, prompt: str, session_id: str | None) -> str:
         messages = self.history.messages(session_id)
         messages.append({"role": "user", "content": prompt})
+        preflight = self.finops.preflight(
+            self.settings.model, estimate_tokens(messages), self.settings.max_tokens
+        )
+        if not preflight.allowed:
+            raise ModelUnavailable(preflight.reason)
         try:
             completion = self._get_anthropic_client().messages.create(
                 model=self.settings.model,
@@ -285,12 +298,20 @@ class FieldRepairCopilot:
             raise ModelUnavailable("Model request unavailable") from exc
         except Exception as exc:
             raise ModelUnavailable("Model request failed") from exc
+        self.finops.record_usage(preflight.request_id, self.settings.model, *anthropic_usage(completion))
         text = "".join(block.text for block in completion.content if getattr(block, "type", "") == "text")
         return _require_text(text)
 
     def _get_openai_client(self) -> OpenAI:
         if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=self.settings.api_key, base_url=self.settings.base_url)
+            if os.getenv("LLM_PROVIDER_AUTH_STYLE", "").lower() == "api-key":
+                self._openai_client = OpenAI(
+                    api_key="",
+                    base_url=self.settings.base_url,
+                    default_headers={"API-Key": self.settings.api_key or "", "Authorization": ""},
+                )
+            else:
+                self._openai_client = OpenAI(api_key=self.settings.api_key, base_url=self.settings.base_url)
         return self._openai_client
 
     def _get_anthropic_client(self) -> Anthropic:
