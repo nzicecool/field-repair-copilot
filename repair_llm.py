@@ -23,6 +23,7 @@ from anthropic import (
 from openai import APIConnectionError, APIError, AuthenticationError, OpenAI, RateLimitError
 
 from finops_runtime import FinOpsRuntime, anthropic_usage, estimate_tokens, openai_usage
+from gemini_native import GeminiNativeError, generate_content, uses_managed_native_gemini
 from repair_engine import ScenarioNotFound, build_repair_brief, list_scenarios_report, select_scenario
 
 DEFAULT_MODEL = "gemini-3-flash-preview"
@@ -105,7 +106,11 @@ class LLMSettings:
 
     @property
     def protocol(self) -> str:
-        return "anthropic-messages" if self.provider == "anthropic" else "openai-chat-completions"
+        if self.provider == "anthropic":
+            return "anthropic-messages"
+        if uses_managed_native_gemini(self.provider):
+            return "gemini-generate-content"
+        return "openai-chat-completions"
 
     @property
     def configured(self) -> bool:
@@ -250,7 +255,12 @@ class FieldRepairCopilot:
             f"Selected authoritative synthetic repair evidence:\n```json\n{evidence}\n```\n\n"
             "Write a grounded repair brief. Make safety, stop-work, evidence-capture, and human approval gates explicit."
         )
-        text = self._generate_anthropic(prompt, session_id) if self.settings.provider == "anthropic" else self._generate_openai_compatible(prompt, session_id)
+        if self.settings.provider == "anthropic":
+            text = self._generate_anthropic(prompt, session_id)
+        elif uses_managed_native_gemini(self.settings.provider):
+            text = self._generate_gemini_native(prompt, session_id)
+        else:
+            text = self._generate_openai_compatible(prompt, session_id)
         return text + SAFETY_FOOTER
 
     def _generate_openai_compatible(self, prompt: str, session_id: str | None) -> str:
@@ -277,6 +287,28 @@ class FieldRepairCopilot:
             raise ModelUnavailable("Model request failed") from exc
         self.finops.record_usage(preflight.request_id, self.settings.model, *openai_usage(completion))
         text = completion.choices[0].message.content if completion.choices else None
+        return _require_text(text)
+
+    def _generate_gemini_native(self, prompt: str, session_id: str | None) -> str:
+        messages = self.history.messages(session_id)
+        messages.append({"role": "user", "content": prompt})
+        preflight = self.finops.preflight(
+            self.settings.model, estimate_tokens(messages), self.settings.max_tokens
+        )
+        if not preflight.allowed:
+            raise ModelUnavailable(preflight.reason)
+        try:
+            text, input_tokens, output_tokens = generate_content(
+                base_url=self.settings.base_url,
+                api_key=self.settings.api_key,
+                model=self.settings.model,
+                system_instruction=SYSTEM_PROMPT,
+                messages=messages,
+                max_tokens=self.settings.max_tokens,
+            )
+        except GeminiNativeError as exc:
+            raise ModelUnavailable("Gemini native request unavailable") from exc
+        self.finops.record_usage(preflight.request_id, self.settings.model, input_tokens, output_tokens)
         return _require_text(text)
 
     def _generate_anthropic(self, prompt: str, session_id: str | None) -> str:
